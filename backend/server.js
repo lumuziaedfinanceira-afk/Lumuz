@@ -879,11 +879,12 @@ Dados financeiros atuais do usuário:
 
         const baseUrl = (process.env.OLLAMA_URL || "https://ra.projetoscti.com.br/2557068").replace(/\/$/, "");
         
-        // Chamada direcionada ao wrapper index.php do servidor
+        // Chamada enviando action = 'generate' exigida pelo PHP
         const response = await axios.post(
             `${baseUrl}/index.php`,
             {
-                model: modelo || "llama3",
+                action: "generate",
+                model: modelo || "llama3.2:1b",
                 prompt: prompt,
                 system: systemPrompt,
                 stream: false
@@ -891,24 +892,21 @@ Dados financeiros atuais do usuário:
             {
                 headers: { "Content-Type": "application/json" },
                 httpsAgent,
-                timeout: 30000
+                timeout: 120000 // Aumentado para 120s para acompanhar o tempo de resposta do PHP/Ollama
             }
         );
 
-        // Exibe a resposta exata recebida do servidor PHP nos logs do Render
-        console.log("Resposta do PHP:", JSON.stringify(response.data, null, 2));
+        // O PHP retorna a resposta dentro do campo 'resposta'
+        if (response.data?.success) {
+            return res.json({ success: true, resposta: response.data.resposta });
+        }
 
-        // Busca o texto em múltiplos padrões de retorno (Ollama, OpenAI ou customizado)
-        const resposta = 
-            response.data?.response || 
-            (typeof response.data?.message === "string" ? response.data.message : response.data?.message?.content) ||
-            response.data?.choices?.[0]?.message?.content || 
-            response.data?.resultado ||
-            response.data?.output ||
-            (typeof response.data === "string" ? response.data : null) ||
-            "Sem resposta da IA.";
+        // Se o PHP retornar erro (ex: Ollama offline)
+        return res.status(500).json({ 
+            success: false, 
+            error: response.data?.error || "Erro ao obter resposta da IA." 
+        });
 
-        return res.json({ success: true, resposta });
     } catch (err) {
         console.error("Erro na integração com Ollama/IA:", err.message);
         return res.status(500).json({ 
