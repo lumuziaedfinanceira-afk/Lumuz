@@ -376,6 +376,29 @@ app.put("/gastos/:id", async (req, res) => {
 });
 
 // =====================
+// ESTATÍSTICAS (gastos agrupados por categoria — alimenta o gráfico de pizza do Dashboard)
+// =====================
+app.get("/estatisticas/:userId", async (req, res) => {
+    if (req.params.userId !== req.uid) {
+        return res.status(403).json({ success: false, error: "Acesso negado." });
+    }
+    try {
+        const rows = await dbAll(
+            `SELECT categoria, SUM(valor) AS total
+             FROM gastos
+             WHERE user_id = ?
+             GROUP BY categoria
+             ORDER BY total DESC`,
+            [req.uid]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error("Erro ao buscar estatísticas de gastos:", err.message);
+        res.status(500).json([]);
+    }
+});
+
+// =====================
 // METAS
 // =====================
 app.post("/metas", async (req, res) => {
