@@ -4,7 +4,6 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const axios = require("axios");
-const yahooFinance = require("yahoo-finance2").default;
 const db = require("./database");
 const { verificarAutenticacao } = require("./firebaseAdmin");
 
@@ -128,17 +127,19 @@ const httpsAgent = new https.Agent({
     rejectUnauthorized: true
 });
 
-// Mapeamento de nomes/apelidos de cripto para o símbolo usado no Yahoo Finance
+// Mapeamento de nomes/apelidos de cripto para o ID usado na CoinGecko
 const MAPA_CRIPTO = {
-    "BITCOIN": "BTC", "BTC": "BTC",
-    "ETHEREUM": "ETH", "ETH": "ETH",
-    "SOLANA": "SOL", "SOL": "SOL",
-    "CARDANO": "ADA", "ADA": "ADA",
-    "RIPPLE": "XRP", "XRP": "XRP",
-    "DOGECOIN": "DOGE", "DOGE": "DOGE",
-    "POLKADOT": "DOT", "DOT": "DOT",
-    "TETHER": "USDT", "USDT": "USDT"
+    "BITCOIN": "bitcoin", "BTC": "bitcoin",
+    "ETHEREUM": "ethereum", "ETH": "ethereum",
+    "SOLANA": "solana", "SOL": "solana",
+    "CARDANO": "cardano", "ADA": "cardano",
+    "RIPPLE": "ripple", "XRP": "ripple",
+    "DOGECOIN": "dogecoin", "DOGE": "dogecoin",
+    "POLKADOT": "polkadot", "DOT": "polkadot",
+    "TETHER": "tether", "USDT": "tether"
 };
+
+const BRAPI_TOKEN = process.env.BRAPI_TOKEN || "";
 
 async function obterPrecoAtivo(ticker, tipo) {
     if (!ticker) return null;
@@ -160,27 +161,44 @@ async function obterPrecoAtivo(ticker, tipo) {
         let price = null;
 
         if (ehCripto) {
-            // Yahoo não tem pares diretos em BRL para a maioria das criptos,
-            // então buscamos em USD e convertemos pela cotação do dólar.
-            const simbolo = MAPA_CRIPTO[tickerUpper] || tickerUpper;
-            const [quoteCripto, quoteDolar] = await Promise.all([
-                yahooFinance.quote(`${simbolo}-USD`).catch(() => null),
-                yahooFinance.quote("BRL=X").catch(() => null)
-            ]);
+            // CoinGecko: API pública, sem necessidade de chave.
+            const idCoinGecko = MAPA_CRIPTO[tickerUpper] || tickerUpper.toLowerCase();
 
-            const precoUsd = quoteCripto?.regularMarketPrice;
-            const cotacaoDolar = quoteDolar?.regularMarketPrice;
+            const resposta = await axios.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                {
+                    params: { ids: idCoinGecko, vs_currencies: "brl" },
+                    httpsAgent,
+                    timeout: 5000
+                }
+            ).catch(() => null);
 
-            if (precoUsd && cotacaoDolar) {
-                price = precoUsd * cotacaoDolar;
+            const precoBrl = resposta?.data?.[idCoinGecko]?.brl;
+            if (precoBrl) {
+                price = parseFloat(precoBrl);
             }
         } else {
-            // Ações e FIIs da B3 usam o mesmo sufixo .SA no Yahoo Finance
-            const simbolo = tickerUpper.endsWith(".SA") ? tickerUpper : `${tickerUpper}.SA`;
-            const quote = await yahooFinance.quote(simbolo).catch(() => null);
+            // brapi.dev (API v2): feito especificamente para ações e FIIs da B3.
+            // PETR4, VALE3, MGLU3 e ITUB4 funcionam sem token; qualquer
+            // outro ticker exige o token gratuito em BRAPI_TOKEN.
+            const url = "https://brapi.dev/api/v2/stocks/quote";
+            const resposta = await axios.get(url, {
+                params: {
+                    symbols: tickerUpper,
+                    ...(BRAPI_TOKEN ? { token: BRAPI_TOKEN } : {})
+                },
+                httpsAgent,
+                timeout: 5000
+            }).catch((err) => {
+                if (err?.response?.status === 401 && !BRAPI_TOKEN) {
+                    console.warn(`[COTAÇÃO AVISO] ${tickerUpper} exige token da brapi.dev. Configure BRAPI_TOKEN no ambiente.`);
+                }
+                return null;
+            });
 
-            if (quote?.regularMarketPrice) {
-                price = quote.regularMarketPrice;
+            const precoAtual = resposta?.data?.results?.[0]?.data?.regularMarketPrice;
+            if (precoAtual) {
+                price = parseFloat(precoAtual);
             }
         }
 
