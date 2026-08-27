@@ -4,7 +4,7 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const axios = require("axios");
-const cheerio = require("cheerio");
+const yahooFinance = require("yahoo-finance2").default;
 const db = require("./database");
 const { verificarAutenticacao } = require("./firebaseAdmin");
 
@@ -91,33 +91,24 @@ const httpsAgent = new https.Agent({
     rejectUnauthorized: false
 });
 
-// Mapeamento completo de criptomoedas para a AwesomeAPI
-const MAPA_AWESOME = {
-    "BITCOIN": "BTC-BRL",
-    "BTC": "BTC-BRL",
-    "ETHEREUM": "ETH-BRL",
-    "ETH": "ETH-BRL",
-    "SOLANA": "SOL-BRL",
-    "SOL": "SOL-BRL",
-    "CARDANO": "ADA-BRL",
-    "ADA": "ADA-BRL",
-    "RIPPLE": "XRP-BRL",
-    "XRP": "XRP-BRL",
-    "DOGECOIN": "DOGE-BRL",
-    "DOGE": "DOGE-BRL",
-    "POLKADOT": "DOT-BRL",
-    "DOT": "DOT-BRL",
-    "TETHER": "USDT-BRL",
-    "USDT": "USDT-BRL"
+// Mapeamento de nomes/apelidos de cripto para o símbolo usado no Yahoo Finance
+const MAPA_CRIPTO = {
+    "BITCOIN": "BTC", "BTC": "BTC",
+    "ETHEREUM": "ETH", "ETH": "ETH",
+    "SOLANA": "SOL", "SOL": "SOL",
+    "CARDANO": "ADA", "ADA": "ADA",
+    "RIPPLE": "XRP", "XRP": "XRP",
+    "DOGECOIN": "DOGE", "DOGE": "DOGE",
+    "POLKADOT": "DOT", "DOT": "DOT",
+    "TETHER": "USDT", "USDT": "USDT"
 };
 
 async function obterPrecoAtivo(ticker, tipo) {
     if (!ticker) return null;
 
-    let tickerUpper = ticker.toUpperCase().trim();
+    const tickerUpper = ticker.toUpperCase().trim();
     const tipoUpper = (tipo || "").toUpperCase().trim();
-
-    const ehCripto = tipoUpper.includes("CRIPTO") || Boolean(MAPA_AWESOME[tickerUpper]);
+    const ehCripto = tipoUpper.includes("CRIPTO") || Boolean(MAPA_CRIPTO[tickerUpper]);
     const cacheKey = `${tickerUpper}_${ehCripto ? "CRIPTO" : tipoUpper}`;
 
     // 1. Cache
@@ -131,66 +122,28 @@ async function obterPrecoAtivo(ticker, tipo) {
     try {
         let price = null;
 
-        // 2. BUSCA CRIPTOMOEDAS (AwesomeAPI -> Binance Fallback)
         if (ehCripto) {
-            const par = MAPA_AWESOME[tickerUpper] || `${tickerUpper}-BRL`;
+            // Yahoo não tem pares diretos em BRL para a maioria das criptos,
+            // então buscamos em USD e convertemos pela cotação do dólar.
+            const simbolo = MAPA_CRIPTO[tickerUpper] || tickerUpper;
+            const [quoteCripto, quoteDolar] = await Promise.all([
+                yahooFinance.quote(`${simbolo}-USD`).catch(() => null),
+                yahooFinance.quote("BRL=X").catch(() => null)
+            ]);
 
-            const resAwesome = await axios.get(`https://economia.awesomeapi.com.br/last/${par}`, {
-                httpsAgent,
-                timeout: 5000
-            }).catch(() => null);
+            const precoUsd = quoteCripto?.regularMarketPrice;
+            const cotacaoDolar = quoteDolar?.regularMarketPrice;
 
-            const chaveAwesome = par.replace("-", "");
-            if (resAwesome?.data?.[chaveAwesome]?.bid) {
-                price = parseFloat(resAwesome.data[chaveAwesome].bid);
+            if (precoUsd && cotacaoDolar) {
+                price = precoUsd * cotacaoDolar;
             }
+        } else {
+            // Ações e FIIs da B3 usam o mesmo sufixo .SA no Yahoo Finance
+            const simbolo = tickerUpper.endsWith(".SA") ? tickerUpper : `${tickerUpper}.SA`;
+            const quote = await yahooFinance.quote(simbolo).catch(() => null);
 
-            if (!price) {
-                const resBinance = await axios.get(`https://api.binance.com/api/v3/ticker/price?symbol=${tickerUpper}BRL`, {
-                    httpsAgent,
-                    timeout: 4000
-                }).catch(() => null);
-
-                if (resBinance?.data?.price) {
-                    price = parseFloat(resBinance.data.price);
-                }
-            }
-        }
-        // 3. BUSCA AÇÕES E FIIS B3 (StatusInvest Web Scraping -> Brapi Fallback)
-        else {
-            try {
-                const pathType = tipoUpper.includes("FII") ? "fundos-imobiliarios" : "acoes";
-                const url = `https://statusinvest.com.br/${pathType}/${tickerUpper}`;
-
-                const { data } = await axios.get(url, {
-                    headers: {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    },
-                    httpsAgent,
-                    timeout: 5000
-                });
-
-                const $ = cheerio.load(data);
-                const precoTexto = $('div[title="Valor atual do ativo"] strong.value').text();
-
-                if (precoTexto) {
-                    const priceClean = precoTexto.replace(/\./g, "").replace(",", ".").trim();
-                    const parsed = parseFloat(priceClean);
-                    if (!isNaN(parsed) && parsed > 0) price = parsed;
-                }
-            } catch (errScrap) {
-                // Silencioso para tentar o fallback
-            }
-
-            if (!price) {
-                const brapiRes = await axios.get(`https://brapi.dev/api/quote/${tickerUpper}`, {
-                    httpsAgent,
-                    timeout: 4000
-                }).catch(() => null);
-
-                if (brapiRes?.data?.results?.[0]?.regularMarketPrice) {
-                    price = parseFloat(brapiRes.data.results[0].regularMarketPrice);
-                }
+            if (quote?.regularMarketPrice) {
+                price = quote.regularMarketPrice;
             }
         }
 
