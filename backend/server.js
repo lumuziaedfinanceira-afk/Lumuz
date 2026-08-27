@@ -12,9 +12,40 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middlewares
-app.use(cors());
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+// CORS restrito: só aceita requisições vindas dos domínios listados em
+// CORS_ORIGINS (separados por vírgula). Ex: CORS_ORIGINS=https://lumuzia.com,https://www.lumuzia.com
+// Se a variável não estiver definida, cai em modo permissivo (dev local) e avisa no log.
+const origensPermitidas = (process.env.CORS_ORIGINS || "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+if (origensPermitidas.length === 0) {
+    console.warn(
+        "[CORS AVISO] CORS_ORIGINS não definida — liberando qualquer origem. " +
+        "Defina CORS_ORIGINS em produção (ex: https://seudominio.com)."
+    );
+}
+
+app.use(cors({
+    origin: (origin, callback) => {
+        // Requisições sem "origin" (ex: curl, apps mobile, mesmo domínio) são permitidas.
+        if (!origin) return callback(null, true);
+
+        // Modo dev: sem whitelist configurada, libera tudo.
+        if (origensPermitidas.length === 0) return callback(null, true);
+
+        if (origensPermitidas.includes(origin)) {
+            return callback(null, true);
+        }
+        return callback(new Error("Origem não permitida pelo CORS."));
+    },
+    credentials: true
+}));
+
+app.use(express.json({ limit: "200kb" }));
+app.use(express.urlencoded({ extended: true, limit: "200kb" }));
 
 // Servir arquivos estáticos do frontend
 app.use(express.static(path.join(__dirname, "../frontend")));
@@ -86,9 +117,15 @@ const CACHE_TTL = 10 * 60 * 1000;
 
 const https = require("https");
 
-// Agente HTTPS para ignorar erros de SSL em redes com proxy/bloqueio
+// Agente HTTPS padrão — valida certificados normalmente (rejectUnauthorized: true,
+// que é o default). NUNCA desative essa validação globalmente: isso abre brecha
+// para ataques man-in-the-middle em todas as chamadas externas (cotações e IA),
+// incluindo o endpoint de IA que recebe saldo/receitas/gastos do usuário.
+//
+// Se algum provedor específico tiver certificado inválido/self-signed, trate
+// esse caso isoladamente com um agente próprio só para ele — nunca globalmente.
 const httpsAgent = new https.Agent({
-    rejectUnauthorized: false
+    rejectUnauthorized: true
 });
 
 // Mapeamento completo de criptomoedas para a AwesomeAPI
