@@ -10,11 +10,7 @@ const { verificarAutenticacao } = require("./firebaseAdmin");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middlewares
-
-// CORS restrito: só aceita requisições vindas dos domínios listados em
-// CORS_ORIGINS (separados por vírgula). Ex: CORS_ORIGINS=https://lumuzia.com,https://www.lumuzia.com
-// Se a variável não estiver definida, cai em modo permissivo (dev local) e avisa no log.
+// CORS
 const origensPermitidas = (process.env.CORS_ORIGINS || "")
     .split(",")
     .map((o) => o.trim())
@@ -22,22 +18,14 @@ const origensPermitidas = (process.env.CORS_ORIGINS || "")
 
 if (origensPermitidas.length === 0) {
     console.warn(
-        "[CORS AVISO] CORS_ORIGINS não definida — liberando qualquer origem. " +
-        "Defina CORS_ORIGINS em produção (ex: https://seudominio.com)."
+        "[CORS AVISO] CORS_ORIGINS não definida — liberando qualquer origem."
     );
 }
 
 app.use(cors({
     origin: (origin, callback) => {
-        // Requisições sem "origin" (ex: curl, apps mobile, mesmo domínio) são permitidas.
-        if (!origin) return callback(null, true);
-
-        // Modo dev: sem whitelist configurada, libera tudo.
-        if (origensPermitidas.length === 0) return callback(null, true);
-
-        if (origensPermitidas.includes(origin)) {
-            return callback(null, true);
-        }
+        if (!origin || origensPermitidas.length === 0) return callback(null, true);
+        if (origensPermitidas.includes(origin)) return callback(null, true);
         return callback(new Error("Origem não permitida pelo CORS."));
     },
     credentials: true
@@ -45,15 +33,11 @@ app.use(cors({
 
 app.use(express.json({ limit: "200kb" }));
 app.use(express.urlencoded({ extended: true, limit: "200kb" }));
-
-// Servir arquivos estáticos do frontend
 app.use(express.static(path.join(__dirname, "../frontend")));
 
-// Helper: Promisify para consultas SQLite
+// Helpers SQLite
 const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
-        if (err) reject(err); else resolve(this);
-    });
+    db.run(sql, params, function (err) { err ? reject(err) : resolve(this); });
 });
 
 const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
@@ -64,14 +48,24 @@ const dbAll = (sql, params = []) => new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows));
 });
 
-// Helper para evitar violações de chave estrangeira ao cadastrar dados
+// Sanitização de valores inteiros ou decimais grandes
+function sanitizarNumero(valor) {
+    if (typeof valor === 'number') return isNaN(valor) ? 0 : valor;
+    if (!valor) return 0;
+    const limpo = String(valor)
+        .trim()
+        .replace(/\s/g, '')
+        .replace(/\.(?=[^,]*$)/g, '')
+        .replace(',', '.');
+    const num = parseFloat(limpo);
+    return isNaN(num) ? 0 : num;
+}
+
 async function garantirUsuarioExiste(userId) {
     if (!userId) return;
     await dbRun(`INSERT OR IGNORE INTO users (id) VALUES (?)`, [userId]);
 }
 
-// Lança automaticamente na tabela certa (gastos/receitas/metas) todo
-// agendamento cuja data já chegou/passou e ainda está pendente.
 async function processarAgendamentosPendentes(userId) {
     const hoje = new Date().toISOString().split("T")[0];
     const pendentes = await dbAll(
@@ -110,24 +104,13 @@ async function processarAgendamentosPendentes(userId) {
     return lancados;
 }
 
-// Cache em memória para cotações (10 minutos de TTL)
+// Cache em memória (10 minutos)
 const priceCache = new Map();
 const CACHE_TTL = 10 * 60 * 1000;
 
 const https = require("https");
+const httpsAgent = new https.Agent({ rejectUnauthorized: true });
 
-// Agente HTTPS padrão — valida certificados normalmente (rejectUnauthorized: true,
-// que é o default). NUNCA desative essa validação globalmente: isso abre brecha
-// para ataques man-in-the-middle em todas as chamadas externas (cotações e IA),
-// incluindo o endpoint de IA que recebe saldo/receitas/gastos do usuário.
-//
-// Se algum provedor específico tiver certificado inválido/self-signed, trate
-// esse caso isoladamente com um agente próprio só para ele — nunca globalmente.
-const httpsAgent = new https.Agent({
-    rejectUnauthorized: true
-});
-
-// Mapeamento de nomes/apelidos de cripto para o ID usado na CoinGecko
 const MAPA_CRIPTO = {
     "BITCOIN": "bitcoin", "BTC": "bitcoin",
     "ETHEREUM": "ethereum", "ETH": "ethereum",
@@ -140,11 +123,12 @@ const MAPA_CRIPTO = {
 };
 
 const BRAPI_TOKEN = process.env.BRAPI_TOKEN || "";
+const COINGECKO_API_KEY = process.env.COINGECKO_API_KEY || "";
 
-// Busca em UMA ÚNICA chamada o preço de todas as criptomoedas da carteira,
-// e já deixa cada uma pronta no cache. Isso evita que a CoinGecko bloqueie
-// por excesso de chamadas simultâneas quando há mais de uma cripto — o que
-// acontecia antes (ex: Bitcoin falhando, Ethereum passando, de forma aleatória).
+function getCoinGeckoHeaders() {
+    return COINGECKO_API_KEY ? { "x-cg-demo-api-key": COINGECKO_API_KEY } : {};
+}
+
 async function prefetchPrecosCripto(ativos) {
     const cryptoAtivos = ativos.filter((a) => {
         const tipoUpper = (a.tipo || "").toUpperCase().trim();
@@ -166,6 +150,7 @@ async function prefetchPrecosCripto(ativos) {
             "https://api.coingecko.com/api/v3/simple/price",
             {
                 params: { ids: idsUnicos.join(","), vs_currencies: "brl" },
+                headers: getCoinGeckoHeaders(),
                 httpsAgent,
                 timeout: 8000
             }
@@ -196,7 +181,6 @@ async function obterPrecoAtivo(ticker, tipo) {
     const ehCripto = tipoUpper.includes("CRIPTO") || Boolean(MAPA_CRIPTO[tickerUpper]);
     const cacheKey = `${tickerUpper}_${ehCripto ? "CRIPTO" : tipoUpper}`;
 
-    // 1. Cache
     if (priceCache.has(cacheKey)) {
         const cached = priceCache.get(cacheKey);
         if (Date.now() - cached.timestamp < CACHE_TTL) {
@@ -208,26 +192,20 @@ async function obterPrecoAtivo(ticker, tipo) {
         let price = null;
 
         if (ehCripto) {
-            // CoinGecko: API pública, sem necessidade de chave.
             const idCoinGecko = MAPA_CRIPTO[tickerUpper] || tickerUpper.toLowerCase();
-
             const resposta = await axios.get(
                 "https://api.coingecko.com/api/v3/simple/price",
                 {
                     params: { ids: idCoinGecko, vs_currencies: "brl" },
+                    headers: getCoinGeckoHeaders(),
                     httpsAgent,
                     timeout: 5000
                 }
             ).catch(() => null);
 
             const precoBrl = resposta?.data?.[idCoinGecko]?.brl;
-            if (precoBrl) {
-                price = parseFloat(precoBrl);
-            }
+            if (precoBrl) price = parseFloat(precoBrl);
         } else {
-            // brapi.dev (API v2): feito especificamente para ações e FIIs da B3.
-            // PETR4, VALE3, MGLU3 e ITUB4 funcionam sem token; qualquer
-            // outro ticker exige o token gratuito em BRAPI_TOKEN.
             const url = "https://brapi.dev/api/v2/stocks/quote";
             const resposta = await axios.get(url, {
                 params: {
@@ -238,15 +216,14 @@ async function obterPrecoAtivo(ticker, tipo) {
                 timeout: 5000
             }).catch((err) => {
                 if (err?.response?.status === 401 && !BRAPI_TOKEN) {
-                    console.warn(`[COTAÇÃO AVISO] ${tickerUpper} exige token da brapi.dev. Configure BRAPI_TOKEN no ambiente.`);
+                    console.warn(`[COTAÇÃO AVISO] ${tickerUpper} exige token da brapi.dev.`);
                 }
                 return null;
             });
 
-            const precoAtual = resposta?.data?.results?.[0]?.data?.regularMarketPrice;
-            if (precoAtual) {
-                price = parseFloat(precoAtual);
-            }
+            const precoAtual = resposta?.data?.results?.[0]?.regularMarketPrice 
+                || resposta?.data?.results?.[0]?.data?.regularMarketPrice;
+            if (precoAtual) price = parseFloat(precoAtual);
         }
 
         if (price !== null && !isNaN(price) && price > 0) {
@@ -262,20 +239,15 @@ async function obterPrecoAtivo(ticker, tipo) {
     }
 }
 
-// =====================
-// ROTAS DE NAVEGAÇÃO
-// =====================
+// Rotas de Navegação
 app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "../frontend/dashboard.html"));
 });
 
-// A partir daqui, TODAS as rotas abaixo exigem token válido (header Authorization: Bearer <token>).
 app.get("/favicon.ico", (req, res) => res.status(204).end());
 app.use(verificarAutenticacao);
 
-// =====================
-// PERFIL
-// =====================
+// Perfil
 app.post("/perfil", async (req, res) => {
     const userId = req.uid;
     const { nome, salario, meta, valorMeta } = req.body;
@@ -289,7 +261,7 @@ app.post("/perfil", async (req, res) => {
                 salario = excluded.salario,
                 meta = excluded.meta,
                 valor_meta = excluded.valor_meta`,
-            [userId, nome || "", salario || 0, meta || "", valorMeta || 0]
+            [userId, nome || "", sanitizarNumero(salario), meta || "", sanitizarNumero(valorMeta)]
         );
         res.json({ success: true, userId });
     } catch (err) {
@@ -298,9 +270,7 @@ app.post("/perfil", async (req, res) => {
     }
 });
 
-// =====================
-// RECEITAS
-// =====================
+// Receitas
 app.post("/receitas", async (req, res) => {
     const userId = req.uid;
     const { descricao, valor } = req.body;
@@ -313,7 +283,7 @@ app.post("/receitas", async (req, res) => {
         await garantirUsuarioExiste(userId);
         await dbRun(
             `INSERT INTO receitas (user_id, descricao, valor) VALUES (?, ?, ?)`,
-            [userId, descricao, valor]
+            [userId, descricao, sanitizarNumero(valor)]
         );
         res.json({ success: true });
     } catch (err) {
@@ -323,9 +293,7 @@ app.post("/receitas", async (req, res) => {
 });
 
 app.get("/receitas/:userId", async (req, res) => {
-    if (req.params.userId !== req.uid) {
-        return res.status(403).json({ success: false, error: "Acesso negado." });
-    }
+    if (req.params.userId !== req.uid) return res.status(403).json({ success: false, error: "Acesso negado." });
     try {
         const rows = await dbAll("SELECT * FROM receitas WHERE user_id = ? ORDER BY id DESC", [req.uid]);
         res.json(rows);
@@ -337,9 +305,7 @@ app.get("/receitas/:userId", async (req, res) => {
 
 app.delete("/receitas/:id", async (req, res) => {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) {
-        return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
-    }
+    if (isNaN(id)) return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
     try {
         const result = await dbRun("DELETE FROM receitas WHERE id = ? AND user_id = ?", [id, req.uid]);
         if (result.changes === 0) return res.status(404).json({ success: false, error: "Registro não encontrado." });
@@ -353,14 +319,12 @@ app.put("/receitas/:id", async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const { descricao, valor } = req.body;
 
-    if (isNaN(id)) {
-        return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
-    }
+    if (isNaN(id)) return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
 
     try {
         const result = await dbRun(
             "UPDATE receitas SET descricao = ?, valor = ? WHERE id = ? AND user_id = ?",
-            [descricao, valor, id, req.uid]
+            [descricao, sanitizarNumero(valor), id, req.uid]
         );
         if (result.changes === 0) return res.status(404).json({ success: false, error: "Registro não encontrado." });
         res.json({ success: true, changes: result.changes });
@@ -369,9 +333,7 @@ app.put("/receitas/:id", async (req, res) => {
     }
 });
 
-// =====================
-// GASTOS
-// =====================
+// Gastos
 app.post("/gastos", async (req, res) => {
     const userId = req.uid;
     const { descricao, valor, categoria } = req.body;
@@ -384,7 +346,7 @@ app.post("/gastos", async (req, res) => {
         await garantirUsuarioExiste(userId);
         await dbRun(
             `INSERT INTO gastos (user_id, descricao, valor, categoria) VALUES (?, ?, ?, ?)`,
-            [userId, descricao, valor, categoria || "Geral"]
+            [userId, descricao, sanitizarNumero(valor), categoria || "Geral"]
         );
         res.json({ success: true });
     } catch (err) {
@@ -394,9 +356,7 @@ app.post("/gastos", async (req, res) => {
 });
 
 app.get("/gastos/:userId", async (req, res) => {
-    if (req.params.userId !== req.uid) {
-        return res.status(403).json({ success: false, error: "Acesso negado." });
-    }
+    if (req.params.userId !== req.uid) return res.status(403).json({ success: false, error: "Acesso negado." });
     try {
         const rows = await dbAll("SELECT * FROM gastos WHERE user_id = ? ORDER BY id DESC", [req.uid]);
         res.json(rows);
@@ -408,9 +368,7 @@ app.get("/gastos/:userId", async (req, res) => {
 
 app.delete("/gastos/:id", async (req, res) => {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) {
-        return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
-    }
+    if (isNaN(id)) return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
     try {
         const result = await dbRun("DELETE FROM gastos WHERE id = ? AND user_id = ?", [id, req.uid]);
         if (result.changes === 0) return res.status(404).json({ success: false, error: "Registro não encontrado." });
@@ -424,14 +382,12 @@ app.put("/gastos/:id", async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const { descricao, valor, categoria } = req.body;
 
-    if (isNaN(id)) {
-        return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
-    }
+    if (isNaN(id)) return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
 
     try {
         const result = await dbRun(
             "UPDATE gastos SET descricao = ?, valor = ?, categoria = ? WHERE id = ? AND user_id = ?",
-            [descricao, valor, categoria, id, req.uid]
+            [descricao, sanitizarNumero(valor), categoria, id, req.uid]
         );
         if (result.changes === 0) return res.status(404).json({ success: false, error: "Registro não encontrado." });
         res.json({ success: true, changes: result.changes });
@@ -440,13 +396,8 @@ app.put("/gastos/:id", async (req, res) => {
     }
 });
 
-// =====================
-// ESTATÍSTICAS (gastos agrupados por categoria — alimenta o gráfico de pizza do Dashboard)
-// =====================
 app.get("/estatisticas/:userId", async (req, res) => {
-    if (req.params.userId !== req.uid) {
-        return res.status(403).json({ success: false, error: "Acesso negado." });
-    }
+    if (req.params.userId !== req.uid) return res.status(403).json({ success: false, error: "Acesso negado." });
     try {
         const rows = await dbAll(
             `SELECT categoria, SUM(valor) AS total
@@ -463,22 +414,18 @@ app.get("/estatisticas/:userId", async (req, res) => {
     }
 });
 
-// =====================
-// METAS
-// =====================
+// Metas
 app.post("/metas", async (req, res) => {
     const userId = req.uid;
     const { nome, valorObjetivo, prazo } = req.body;
 
-    if (!nome) {
-        return res.status(400).json({ success: false, error: "Dados incompletos." });
-    }
+    if (!nome) return res.status(400).json({ success: false, error: "Dados incompletos." });
 
     try {
         await garantirUsuarioExiste(userId);
         await dbRun(
             `INSERT INTO metas (user_id, nome, valor_objetivo, prazo) VALUES (?, ?, ?, ?)`,
-            [userId, nome, valorObjetivo || 0, prazo || 12]
+            [userId, nome, sanitizarNumero(valorObjetivo), sanitizarNumero(prazo) || 12]
         );
         res.json({ success: true });
     } catch (err) {
@@ -488,9 +435,7 @@ app.post("/metas", async (req, res) => {
 });
 
 app.get("/metas/:userId", async (req, res) => {
-    if (req.params.userId !== req.uid) {
-        return res.status(403).json({ success: false, error: "Acesso negado." });
-    }
+    if (req.params.userId !== req.uid) return res.status(403).json({ success: false, error: "Acesso negado." });
     try {
         const rows = await dbAll("SELECT * FROM metas WHERE user_id = ? ORDER BY id DESC", [req.uid]);
         res.json(rows);
@@ -502,9 +447,7 @@ app.get("/metas/:userId", async (req, res) => {
 
 app.delete("/metas/:id", async (req, res) => {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) {
-        return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
-    }
+    if (isNaN(id)) return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
     try {
         const result = await dbRun("DELETE FROM metas WHERE id = ? AND user_id = ?", [id, req.uid]);
         if (result.changes === 0) return res.status(404).json({ success: false, error: "Registro não encontrado." });
@@ -518,14 +461,12 @@ app.put("/metas/:id", async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const { nome, valorObjetivo, valorAtual, prazo } = req.body;
 
-    if (isNaN(id)) {
-        return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
-    }
+    if (isNaN(id)) return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
 
     try {
         const result = await dbRun(
             "UPDATE metas SET nome = ?, valor_objetivo = ?, valor_atual = ?, prazo = ? WHERE id = ? AND user_id = ?",
-            [nome, valorObjetivo, valorAtual, prazo, id, req.uid]
+            [nome, sanitizarNumero(valorObjetivo), sanitizarNumero(valorAtual), sanitizarNumero(prazo), id, req.uid]
         );
         if (result.changes === 0) return res.status(404).json({ success: false, error: "Registro não encontrado." });
         res.json({ success: true, changes: result.changes });
@@ -535,9 +476,7 @@ app.put("/metas/:id", async (req, res) => {
 });
 
 app.get("/metas/estimativa/:userId", async (req, res) => {
-    if (req.params.userId !== req.uid) {
-        return res.status(403).json({ success: false, error: "Acesso negado." });
-    }
+    if (req.params.userId !== req.uid) return res.status(403).json({ success: false, error: "Acesso negado." });
     try {
         const receitasPorMes = await dbAll(
             `SELECT strftime('%Y-%m', created_at) AS mes, SUM(valor) AS total FROM receitas WHERE user_id = ? GROUP BY mes`,
@@ -556,7 +495,6 @@ app.get("/metas/estimativa/:userId", async (req, res) => {
 
         const totalReceitas = receitasPorMes.reduce((s, r) => s + (r.total || 0), 0);
         const totalGastos = gastosPorMes.reduce((s, g) => s + (g.total || 0), 0);
-
         const mediaMensal = (totalReceitas - totalGastos) / numMeses;
 
         res.json({ mediaMensal, baseMeses: numMeses });
@@ -566,9 +504,7 @@ app.get("/metas/estimativa/:userId", async (req, res) => {
     }
 });
 
-// =====================
-// AGENDAMENTOS
-// =====================
+// Agendamentos
 app.post("/agendamentos", async (req, res) => {
     const userId = req.uid;
     const { tipo, descricao, valor, categoria, prazo, dataAgendada } = req.body;
@@ -585,7 +521,7 @@ app.post("/agendamentos", async (req, res) => {
         const result = await dbRun(
             `INSERT INTO agendamentos (user_id, tipo, descricao, valor, categoria, prazo, data_agendada)
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [userId, tipo, descricao, valor, categoria || null, prazo || null, dataAgendada]
+            [userId, tipo, descricao, sanitizarNumero(valor), categoria || null, sanitizarNumero(prazo) || null, dataAgendada]
         );
         res.json({ success: true, id: result.lastID });
     } catch (err) {
@@ -595,12 +531,9 @@ app.post("/agendamentos", async (req, res) => {
 });
 
 app.get("/agendamentos/:userId", async (req, res) => {
-    if (req.params.userId !== req.uid) {
-        return res.status(403).json({ success: false, error: "Acesso negado." });
-    }
+    if (req.params.userId !== req.uid) return res.status(403).json({ success: false, error: "Acesso negado." });
     try {
         await processarAgendamentosPendentes(req.uid);
-
         const rows = await dbAll(
             "SELECT * FROM agendamentos WHERE user_id = ? ORDER BY data_agendada ASC",
             [req.uid]
@@ -613,9 +546,7 @@ app.get("/agendamentos/:userId", async (req, res) => {
 });
 
 app.get("/agendamentos/processar/:userId", async (req, res) => {
-    if (req.params.userId !== req.uid) {
-        return res.status(403).json({ success: false, error: "Acesso negado." });
-    }
+    if (req.params.userId !== req.uid) return res.status(403).json({ success: false, error: "Acesso negado." });
     try {
         const lancados = await processarAgendamentosPendentes(req.uid);
         res.json({ lancados });
@@ -627,15 +558,11 @@ app.get("/agendamentos/processar/:userId", async (req, res) => {
 
 app.patch("/agendamentos/:id/pago", async (req, res) => {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) {
-        return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
-    }
+    if (isNaN(id)) return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
     try {
         const ag = await dbGet("SELECT * FROM agendamentos WHERE id = ? AND user_id = ?", [id, req.uid]);
         if (!ag) return res.status(404).json({ success: false, error: "Agendamento não encontrado." });
-        if (ag.status === "lancado") {
-            return res.json({ success: true, jaEstavaLancado: true });
-        }
+        if (ag.status === "lancado") return res.json({ success: true, jaEstavaLancado: true });
 
         if (ag.tipo === "gasto") {
             await dbRun(
@@ -664,9 +591,7 @@ app.patch("/agendamentos/:id/pago", async (req, res) => {
 
 app.patch("/agendamentos/:id/pendente", async (req, res) => {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) {
-        return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
-    }
+    if (isNaN(id)) return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
     try {
         const result = await dbRun(
             "UPDATE agendamentos SET status = 'pendente' WHERE id = ? AND user_id = ?",
@@ -681,9 +606,7 @@ app.patch("/agendamentos/:id/pendente", async (req, res) => {
 
 app.delete("/agendamentos/:id", async (req, res) => {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) {
-        return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
-    }
+    if (isNaN(id)) return res.status(400).json({ success: false, error: "Parâmetros inválidos." });
     try {
         const result = await dbRun("DELETE FROM agendamentos WHERE id = ? AND user_id = ?", [id, req.uid]);
         if (result.changes === 0) return res.status(404).json({ success: false, error: "Registro não encontrado." });
@@ -693,9 +616,7 @@ app.delete("/agendamentos/:id", async (req, res) => {
     }
 });
 
-// =====================
-// INVESTIMENTOS
-// =====================
+// Investimentos
 app.post("/investimentos", async (req, res) => {
     const userId = req.uid;
     const { ticker, tipo, quantidade, precoMedio, dataCompra } = req.body;
@@ -705,8 +626,8 @@ app.post("/investimentos", async (req, res) => {
     }
 
     const tickerFinal = ticker.toUpperCase().trim();
-    const qtdNova = parseFloat(quantidade);
-    const precoNovo = parseFloat(precoMedio);
+    const qtdNova = sanitizarNumero(quantidade);
+    const precoNovo = sanitizarNumero(precoMedio);
     const dataFinal = dataCompra || new Date().toISOString().split("T")[0];
 
     try {
@@ -723,8 +644,8 @@ app.post("/investimentos", async (req, res) => {
         );
 
         if (existente) {
-            const qtdAtual = parseFloat(existente.quantidade) || 0;
-            const pmAtual = parseFloat(existente.preco_medio) || 0;
+            const qtdAtual = sanitizarNumero(existente.quantidade);
+            const pmAtual = sanitizarNumero(existente.preco_medio);
 
             const qtdTotal = qtdAtual + qtdNova;
             const custoTotal = (qtdAtual * pmAtual) + (qtdNova * precoNovo);
@@ -757,9 +678,7 @@ app.post("/investimentos", async (req, res) => {
 });
 
 app.get("/investimentos/:userId", async (req, res) => {
-    if (req.params.userId !== req.uid) {
-        return res.status(403).json({ success: false, error: "Acesso negado." });
-    }
+    if (req.params.userId !== req.uid) return res.status(403).json({ success: false, error: "Acesso negado." });
     try {
         const rows = await dbAll("SELECT * FROM investimentos WHERE user_id = ? ORDER BY id DESC", [req.uid]);
         res.json(rows);
@@ -771,10 +690,7 @@ app.get("/investimentos/:userId", async (req, res) => {
 
 app.delete("/investimentos/:id", async (req, res) => {
     const id = parseInt(req.params.id, 10);
-
-    if (isNaN(id)) {
-        return res.status(400).json({ success: false, error: "ID ausente." });
-    }
+    if (isNaN(id)) return res.status(400).json({ success: false, error: "ID ausente." });
 
     try {
         const result = await dbRun("DELETE FROM investimentos WHERE id = ? AND user_id = ?", [id, req.uid]);
@@ -801,14 +717,10 @@ app.get("/api/cotacao/:ticker", async (req, res) => {
 });
 
 app.get("/api/investimentos/cotacoes/:userId", async (req, res) => {
-    if (req.params.userId !== req.uid) {
-        return res.status(403).json({ success: false, error: "Acesso negado." });
-    }
+    if (req.params.userId !== req.uid) return res.status(403).json({ success: false, error: "Acesso negado." });
     const userId = req.uid;
 
     try {
-        priceCache.clear();
-
         const ativos = await dbAll("SELECT * FROM investimentos WHERE user_id = ?", [userId]);
 
         if (!ativos || ativos.length === 0) {
@@ -822,8 +734,6 @@ app.get("/api/investimentos/cotacoes/:userId", async (req, res) => {
             });
         }
 
-        // Busca todas as criptos da carteira numa única chamada, evitando
-        // que a CoinGecko bloqueie por chamadas simultâneas.
         await prefetchPrecosCripto(ativos);
 
         let totalInvestido = 0;
@@ -831,8 +741,8 @@ app.get("/api/investimentos/cotacoes/:userId", async (req, res) => {
 
         const detalhes = await Promise.all(
             ativos.map(async (ativo) => {
-                const qtd = parseFloat(ativo.quantidade) || 0;
-                const pm = parseFloat(ativo.preco_medio) || 0;
+                const qtd = sanitizarNumero(ativo.quantidade);
+                const pm = sanitizarNumero(ativo.preco_medio);
                 const investidoAtivo = qtd * pm;
 
                 const cotado = await obterPrecoAtivo(ativo.ticker, ativo.tipo);
@@ -897,9 +807,7 @@ app.get("/api/investimentos/cotacoes/:userId", async (req, res) => {
 });
 
 app.get("/api/investimentos/historico/:userId", async (req, res) => {
-    if (req.params.userId !== req.uid) {
-        return res.status(403).json({ success: false, error: "Acesso negado." });
-    }
+    if (req.params.userId !== req.uid) return res.status(403).json({ success: false, error: "Acesso negado." });
     try {
         const rows = await dbAll(
             "SELECT data, valor_investido, valor_atual, rendimento FROM historico_patrimonio WHERE user_id = ? ORDER BY data ASC",
@@ -913,9 +821,7 @@ app.get("/api/investimentos/historico/:userId", async (req, res) => {
 });
 
 app.get("/api/investimentos/historico-ativo/:userId/:ticker", async (req, res) => {
-    if (req.params.userId !== req.uid) {
-        return res.status(403).json({ success: false, error: "Acesso negado." });
-    }
+    if (req.params.userId !== req.uid) return res.status(403).json({ success: false, error: "Acesso negado." });
     try {
         const rows = await dbAll(
             "SELECT data, valor_investido, valor_atual, rendimento FROM historico_ativos WHERE user_id = ? AND ticker = ? ORDER BY data ASC",
@@ -928,9 +834,7 @@ app.get("/api/investimentos/historico-ativo/:userId/:ticker", async (req, res) =
     }
 });
 
-// =====================
-// IA / OLLAMA
-// =====================
+// IA / Ollama
 app.post("/api/ia/chat", async (req, res) => {
     const userId = req.uid;
     const { prompt, modelo } = req.body;
@@ -961,7 +865,6 @@ Dados financeiros atuais do usuário:
 
         const baseUrl = (process.env.OLLAMA_URL || "https://ra.projetoscti.com.br/2557068").replace(/\/$/, "");
         
-        // Chamada enviando action = 'generate' exigida pelo PHP
         const response = await axios.post(
             `${baseUrl}/index.php`,
             {
@@ -974,16 +877,14 @@ Dados financeiros atuais do usuário:
             {
                 headers: { "Content-Type": "application/json" },
                 httpsAgent,
-                timeout: 120000 // Aumentado para 120s para acompanhar o tempo de resposta do PHP/Ollama
+                timeout: 120000
             }
         );
 
-        // O PHP retorna a resposta dentro do campo 'resposta'
         if (response.data?.success) {
             return res.json({ success: true, resposta: response.data.resposta });
         }
 
-        // Se o PHP retornar erro (ex: Ollama offline)
         return res.status(500).json({ 
             success: false, 
             error: response.data?.error || "Erro ao obter resposta da IA." 
@@ -997,13 +898,10 @@ Dados financeiros atuais do usuário:
         });
     }
 });
-// =====================
-// DASHBOARD & ESTATÍSTICAS
-// =====================
+
+// Dashboard
 app.get("/dashboard/:userId", async (req, res) => {
-    if (req.params.userId !== req.uid) {
-        return res.status(403).json({ success: false, error: "Acesso negado." });
-    }
+    if (req.params.userId !== req.uid) return res.status(403).json({ success: false, error: "Acesso negado." });
 
     const userId = req.uid;
 
@@ -1028,9 +926,7 @@ app.get("/dashboard/:userId", async (req, res) => {
     }
 });
 
-// =====================
-// INICIALIZAÇÃO
-// =====================
+// Inicialização
 app.listen(PORT, () => {
     console.log(`Servidor rodando com sucesso na porta ${PORT}`);
 });
