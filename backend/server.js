@@ -141,6 +141,53 @@ const MAPA_CRIPTO = {
 
 const BRAPI_TOKEN = process.env.BRAPI_TOKEN || "";
 
+// Busca em UMA ÚNICA chamada o preço de todas as criptomoedas da carteira,
+// e já deixa cada uma pronta no cache. Isso evita que a CoinGecko bloqueie
+// por excesso de chamadas simultâneas quando há mais de uma cripto — o que
+// acontecia antes (ex: Bitcoin falhando, Ethereum passando, de forma aleatória).
+async function prefetchPrecosCripto(ativos) {
+    const cryptoAtivos = ativos.filter((a) => {
+        const tipoUpper = (a.tipo || "").toUpperCase().trim();
+        const tickerUpper = (a.ticker || "").toUpperCase().trim();
+        return tipoUpper.includes("CRIPTO") || Boolean(MAPA_CRIPTO[tickerUpper]);
+    });
+
+    if (cryptoAtivos.length === 0) return;
+
+    const idsUnicos = [...new Set(
+        cryptoAtivos.map((a) => {
+            const tickerUpper = a.ticker.toUpperCase().trim();
+            return MAPA_CRIPTO[tickerUpper] || tickerUpper.toLowerCase();
+        })
+    )];
+
+    try {
+        const resposta = await axios.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            {
+                params: { ids: idsUnicos.join(","), vs_currencies: "brl" },
+                httpsAgent,
+                timeout: 8000
+            }
+        );
+
+        for (const ativo of cryptoAtivos) {
+            const tickerUpper = ativo.ticker.toUpperCase().trim();
+            const idCoinGecko = MAPA_CRIPTO[tickerUpper] || tickerUpper.toLowerCase();
+            const precoBrl = resposta?.data?.[idCoinGecko]?.brl;
+
+            if (precoBrl) {
+                priceCache.set(`${tickerUpper}_CRIPTO`, {
+                    price: parseFloat(precoBrl),
+                    timestamp: Date.now()
+                });
+            }
+        }
+    } catch (err) {
+        console.warn("[COTAÇÃO AVISO] Falha ao pré-buscar preços de cripto em lote:", err.message);
+    }
+}
+
 async function obterPrecoAtivo(ticker, tipo) {
     if (!ticker) return null;
 
@@ -774,6 +821,10 @@ app.get("/api/investimentos/cotacoes/:userId", async (req, res) => {
                 detalhes: []
             });
         }
+
+        // Busca todas as criptos da carteira numa única chamada, evitando
+        // que a CoinGecko bloqueie por chamadas simultâneas.
+        await prefetchPrecosCripto(ativos);
 
         let totalInvestido = 0;
         let valorAtualTotal = 0;
