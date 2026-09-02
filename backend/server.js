@@ -973,7 +973,7 @@ Dados financeiros atuais do usuário:
             `${baseUrl}/index.php`,
             {
                 action: "generate",
-                model: modelo || "llama3.2:1b",
+                model: modelo || "qwen2.5:3b",
                 prompt: prompt,
                 system: systemPrompt,
                 stream: false
