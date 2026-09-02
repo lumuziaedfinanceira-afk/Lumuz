@@ -75,6 +75,23 @@
         <div class="chart-container-canvas"><canvas id="graficoRendimentoPorAtivo"></canvas></div>
     </div>
 </div>
+
+        <section class="filtro-tabela" style="margin-top:30px;">
+            <h2 style="margin-top:0;">🔎 Filtrar investimentos</h2>
+            <div class="filtro-tabela-grid">
+                <input id="filtroInvTicker" placeholder="Ativo / Ticker">
+                <select id="filtroInvTipo"><option value="">Todos os tipos</option><option value="Ação">Ação</option><option value="FII">Fundo Imobiliário (FII)</option><option value="Cripto">Criptomoeda</option></select>
+                <input id="filtroInvQtdMin" type="number" step="0.00000001" placeholder="Qtd. mínima">
+                <input id="filtroInvQtdMax" type="number" step="0.00000001" placeholder="Qtd. máxima">
+                <input id="filtroInvPrecoMin" type="number" step="0.01" placeholder="Preço médio mínimo">
+                <input id="filtroInvPrecoMax" type="number" step="0.01" placeholder="Preço médio máximo">
+                <input id="filtroInvInicio" type="date" title="Data inicial">
+                <input id="filtroInvFim" type="date" title="Data final">
+            </div>
+            <div class="filtro-acoes"><button class="btn-filtrar" type="button" onclick="filtrarInvestimentos()">Filtrar</button><button class="btn-limpar" type="button" onclick="limparFiltroInvestimentos()">Limpar filtros</button></div>
+            <div id="contagemInvestimentos" class="filtro-contagem"></div>
+        </section>
+
         <!-- Tabela Dinâmica de Ativos -->
         <section style="margin-top: 30px;">
             <h2>Seus Ativos</h2>
