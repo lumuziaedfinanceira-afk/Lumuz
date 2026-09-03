@@ -66,13 +66,15 @@ async function carregarDashboard(uid) {
 
         const data = await res.json();
 
+        const fmt = (v) => (Number(v) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
         const elSaldo    = document.getElementById("saldo");
         const elReceitas = document.getElementById("receitas");
         const elGastos   = document.getElementById("gastos");
 
-        if (elSaldo)    elSaldo.innerText    = `R$ ${(Number(data.saldo)    || 0).toFixed(2)}`;
-        if (elReceitas) elReceitas.innerText = `R$ ${(Number(data.receitas) || 0).toFixed(2)}`;
-        if (elGastos)   elGastos.innerText   = `R$ ${(Number(data.gastos)  || 0).toFixed(2)}`;
+        if (elSaldo)    elSaldo.innerText    = `R$ ${fmt(data.saldo)}`;
+        if (elReceitas) elReceitas.innerText = `R$ ${fmt(data.receitas)}`;
+        if (elGastos)   elGastos.innerText   = `R$ ${fmt(data.gastos)}`;
 
         const label = document.getElementById("labelPeriodo");
         if (label) label.innerText = labelPeriodo();
@@ -234,31 +236,55 @@ async function carregarGrafico(uid) {
 // ─── controles do filtro ───────────────────────────────────────────────────
 
 function inicializarFiltros(uid) {
-    const inputMes      = document.getElementById("inputMes");
-    const modoFiltro    = document.getElementById("modoFiltro");
-    const grupoMes      = document.getElementById("grupoMes");
-    const grupoPeriodo  = document.getElementById("grupoPeriodo");
-    const grupoAno      = document.getElementById("grupoAno");
-    const inputAno      = document.getElementById("inputAno");
-    const btnFiltrar    = document.getElementById("btnFiltrar");
+    const inputMes     = document.getElementById("inputMes");
+    const inputAno     = document.getElementById("inputAno");
+    const modoFiltro   = document.getElementById("modoFiltro");
+    const grupoMes     = document.getElementById("grupoMes");
+    const grupoPeriodo = document.getElementById("grupoPeriodo");
+    const grupoAno     = document.getElementById("grupoAno");
+    const btnFiltrar   = document.getElementById("btnFiltrar");
+    const labelPeriodo = document.getElementById("labelPeriodo");
 
-    // Inicializa com o mês atual
+    // Preenche os inputs com os valores atuais ao carregar
     if (inputMes) inputMes.value = mesAtual();
     if (inputAno) inputAno.value = new Date().getFullYear();
 
-    // Troca os grupos visíveis ao mudar o modo
-    modoFiltro?.addEventListener("change", () => {
+    /** Mostra apenas o grupo correspondente ao modo selecionado */
+    function atualizarGrupos() {
         const modo = modoFiltro.value;
-        grupoMes.style.display     = modo === "mes"     ? "" : "none";
+        grupoMes.style.display     = modo === "mes"     ? "flex" : "none";
         grupoPeriodo.style.display = modo === "periodo" ? "flex" : "none";
-        grupoAno.style.display     = modo === "ano"     ? "" : "none";
+        grupoAno.style.display     = modo === "ano"     ? "flex" : "none";
+    }
+
+    /** Feedback visual: deixa os cards semi-transparentes durante a consulta */
+    function setCardsLoading(loading) {
+        document.querySelectorAll(".card").forEach(c => {
+            c.style.transition = "opacity 0.2s";
+            c.style.opacity    = loading ? "0.5" : "1";
+        });
+        if (btnFiltrar) {
+            btnFiltrar.disabled    = loading;
+            btnFiltrar.textContent = loading ? "⏳ Buscando…" : "🔍 Filtrar";
+        }
+    }
+
+    modoFiltro?.addEventListener("change", atualizarGrupos);
+
+    btnFiltrar?.addEventListener("click", async () => {
+        // Atualiza o label antes da requisição
+        if (labelPeriodo) labelPeriodo.textContent = labelPeriodo.textContent; // mantém até resposta
+
+        setCardsLoading(true);
+        await Promise.allSettled([
+            carregarDashboard(uid),
+            carregarGrafico(uid)
+        ]);
+        setCardsLoading(false);
     });
 
-    // Ao clicar em Filtrar, recarrega dashboard e gráfico de pizza
-    btnFiltrar?.addEventListener("click", () => {
-        carregarDashboard(uid);
-        carregarGrafico(uid);
-    });
+    // Garante que o estado inicial dos grupos está correto
+    atualizarGrupos();
 }
 
 // ─── inicialização ─────────────────────────────────────────────────────────
