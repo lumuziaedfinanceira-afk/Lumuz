@@ -28,7 +28,56 @@
     <main>
         <h1>Dashboard Financeiro</h1>
 
+        <!-- Filtro de período -->
+        <div id="filtroPeriodo" style="
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            background: rgba(111,231,221,0.07);
+            padding: 14px 18px;
+            border-radius: 8px;
+        ">
+            <!-- Seletor de modo -->
+            <select id="modoFiltro" style="padding:6px 10px;border-radius:6px;background:#1a2a2e;color:#fff;border:1px solid #6FE7DD;">
+                <option value="mes">Mês específico</option>
+                <option value="periodo">Período</option>
+                <option value="ano">Ano</option>
+            </select>
+
+            <!-- Mês específico -->
+            <div id="grupoMes">
+                <input type="month" id="inputMes" style="padding:6px 10px;border-radius:6px;background:#1a2a2e;color:#fff;border:1px solid #6FE7DD;">
+            </div>
+
+            <!-- Período -->
+            <div id="grupoPeriodo" style="display:none;gap:6px;align-items:center;display:none;flex-wrap:wrap;">
+                <input type="month" id="inputMesInicio" placeholder="De" style="padding:6px 10px;border-radius:6px;background:#1a2a2e;color:#fff;border:1px solid #6FE7DD;">
+                <span style="color:#8FA1A3;">até</span>
+                <input type="month" id="inputMesFim" placeholder="Até" style="padding:6px 10px;border-radius:6px;background:#1a2a2e;color:#fff;border:1px solid #6FE7DD;">
+            </div>
+
+            <!-- Ano -->
+            <div id="grupoAno" style="display:none;">
+                <input type="number" id="inputAno" min="2020" max="2099" style="padding:6px 10px;border-radius:6px;background:#1a2a2e;color:#fff;border:1px solid #6FE7DD;width:90px;">
+            </div>
+
+            <button id="btnFiltrar" style="
+                padding:6px 16px;
+                background:#6FE7DD;
+                color:#0d1f26;
+                border:none;
+                border-radius:6px;
+                font-weight:bold;
+                cursor:pointer;
+            ">Filtrar</button>
+
+            <span id="labelPeriodo" style="color:#8FA1A3;font-size:0.85rem;"></span>
+        </div>
+
         <!-- Substitua ou adicione no elemento <div class="cards"> do seu HTML -->
+
 <div class="cards">
     <div class="card">
         <h3>Saldo Atual</h3>
