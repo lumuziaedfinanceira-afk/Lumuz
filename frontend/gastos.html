@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 
@@ -25,7 +25,7 @@
             <a href="receitas.html">Receitas</a>
             <a href="metas.html">Metas</a>
             <a href="investimentos.html">Investimentos</a>
-            <a href="relatorio.html" class="active">Relatório</a>
+            <a href="relatorio.html">Relatório</a>
             <a href="chat.html">Chat</a>
             <a href="perfil.html">Perfil</a>
         </aside>
@@ -65,7 +65,7 @@
 
 
         <section class="filtro-tabela">
-            <h2 style="margin-top:0;">🔎 Filtrar gastos</h2>
+            <h2 style="margin-top:0;">Filtrar gastos</h2>
             <div class="filtro-tabela-grid">
                 <input id="filtroGastoDescricao" placeholder="Descrição">
                 <select id="filtroGastoCategoria"><option value="">Todas as categorias</option><option>Alimentação</option><option>Transporte</option><option>Moradia</option><option>Lazer</option><option>Saúde</option><option>Educação</option><option>Outros</option></select>
@@ -99,7 +99,7 @@
 <!-- GASTO PARCELADO -->
 <!-- ===================== -->
 <section class="form-container" style="margin-top:30px; background-color: rgba(111,231,221,0.05); padding:20px; border-radius:8px;">
-    <h2>🧾 Compra Parcelada</h2>
+    <h2>Compra Parcelada</h2>
     <p style="color:#8FA1A3;">Informe o valor total e o número de parcelas. Cada parcela vira um gasto no mês correspondente, automaticamente.</p>
 
     <div class="form" style="margin-top:15px;">
@@ -130,16 +130,16 @@
         <!-- CALENDÁRIO DE AGENDAMENTOS -->
         <!-- ===================== -->
         <section class="form-container" style="margin-top:30px; background-color: rgba(111,231,221,0.05); padding:20px; border-radius:8px;">
-            <h2>📅 Calendário de Agendamentos</h2>
+            <h2>Calendario de Agendamentos</h2>
             <p style="color:#8FA1A3;">Marque uma meta, gasto ou receita para uma data futura (qualquer ano). Quando o dia chegar, ela é lançada automaticamente.</p>
 
             <div class="calendario-header" style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:15px; flex-wrap:wrap;">
-                <button id="calMesAnterior" type="button" class="cal-nav-btn">‹</button>
+                <button id="calMesAnterior" type="button" class="cal-nav-btn">&lt;</button>
                 <div style="display:flex; gap:10px; align-items:center;">
                     <select id="calSelectMes"></select>
                     <select id="calSelectAno"></select>
                 </div>
-                <button id="calMesProximo" type="button" class="cal-nav-btn">›</button>
+                <button id="calMesProximo" type="button" class="cal-nav-btn">&gt;</button>
                 <button id="calHoje" type="button" class="cal-nav-btn">Hoje</button>
             </div>
 
