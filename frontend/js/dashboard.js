@@ -265,7 +265,7 @@ function inicializarFiltros(uid) {
         });
         if (btnFiltrar) {
             btnFiltrar.disabled    = loading;
-            btnFiltrar.textContent = loading ? "⏳ Buscando…" : "🔍 Filtrar";
+            btnFiltrar.textContent = loading ? "Buscando..." : "Filtrar";
         }
     }
 
