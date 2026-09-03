@@ -451,14 +451,33 @@ app.get("/estatisticas/:userId", async (req, res) => {
     if (req.params.userId !== req.uid) {
         return res.status(403).json({ success: false, error: "Acesso negado." });
     }
+
+    const hoje = new Date();
+    const mesAtual = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}`;
+    const { mes, ano, mesInicio, mesFim } = req.query;
+
+    let filtro = "";
+    let params = [req.uid];
+
+    if (ano) {
+        filtro = `AND strftime('%Y', created_at) = ?`;
+        params = [req.uid, String(ano)];
+    } else if (mesInicio && mesFim) {
+        filtro = `AND strftime('%Y-%m', created_at) >= ? AND strftime('%Y-%m', created_at) <= ?`;
+        params = [req.uid, mesInicio, mesFim];
+    } else {
+        filtro = `AND strftime('%Y-%m', created_at) = ?`;
+        params = [req.uid, mes || mesAtual];
+    }
+
     try {
         const rows = await dbAll(
             `SELECT categoria, SUM(valor) AS total
              FROM gastos
-             WHERE user_id = ?
+             WHERE user_id = ? ${filtro}
              GROUP BY categoria
              ORDER BY total DESC`,
-            [req.uid]
+            params
         );
         res.json(rows);
     } catch (err) {
@@ -1014,19 +1033,58 @@ app.get("/dashboard/:userId", async (req, res) => {
 
     const userId = req.uid;
 
+    // Parâmetros de período. Modos:
+    //   ?mes=2026-09             → mês específico
+    //   ?ano=2026                → ano inteiro
+    //   ?mesInicio=2026-07&mesFim=2026-09 → período (conjunto de meses)
+    // Sem parâmetros → mês atual do servidor
+    const hoje = new Date();
+    const mesAtual = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}`;
+
+    const { mes, ano, mesInicio, mesFim } = req.query;
+
+    let filtroReceitas = "";
+    let filtroGastos  = "";
+    let params = [userId];
+
+    if (ano) {
+        // Ano inteiro
+        filtroReceitas = `AND strftime('%Y', created_at) = ?`;
+        filtroGastos   = `AND strftime('%Y', created_at) = ?`;
+        params = [userId, String(ano)];
+    } else if (mesInicio && mesFim) {
+        // Período (conjunto de meses)
+        filtroReceitas = `AND strftime('%Y-%m', created_at) >= ? AND strftime('%Y-%m', created_at) <= ?`;
+        filtroGastos   = `AND strftime('%Y-%m', created_at) >= ? AND strftime('%Y-%m', created_at) <= ?`;
+        params = [userId, mesInicio, mesFim];
+    } else {
+        // Mês específico ou mês atual
+        const mesFiltro = mes || mesAtual;
+        filtroReceitas = `AND strftime('%Y-%m', created_at) = ?`;
+        filtroGastos   = `AND strftime('%Y-%m', created_at) = ?`;
+        params = [userId, mesFiltro];
+    }
+
     try {
         const user = await dbGet("SELECT * FROM users WHERE id = ?", [userId]);
-        const totalReceitasRow = await dbGet("SELECT IFNULL(SUM(valor), 0) AS total FROM receitas WHERE user_id = ?", [userId]);
-        const totalGastosRow = await dbGet("SELECT IFNULL(SUM(valor), 0) AS total FROM gastos WHERE user_id = ?", [userId]);
+
+        const totalReceitasRow = await dbGet(
+            `SELECT IFNULL(SUM(valor), 0) AS total FROM receitas WHERE user_id = ? ${filtroReceitas}`,
+            params
+        );
+        const totalGastosRow = await dbGet(
+            `SELECT IFNULL(SUM(valor), 0) AS total FROM gastos WHERE user_id = ? ${filtroGastos}`,
+            params
+        );
 
         const totalReceitas = totalReceitasRow?.total || 0;
-        const totalGastos = totalGastosRow?.total || 0;
+        const totalGastos   = totalGastosRow?.total  || 0;
         const saldo = totalReceitas - totalGastos;
 
         res.json({
             user: user || { id: userId, nome: "", salario: 0, meta: "", valor_meta: 0 },
-            totalReceitas,
-            totalGastos,
+            receitas: totalReceitas,
+            gastos: totalGastos,
             saldo
         });
     } catch (err) {
